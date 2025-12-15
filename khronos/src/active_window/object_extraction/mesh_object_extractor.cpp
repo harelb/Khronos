@@ -37,8 +37,13 @@
 
 #include "khronos/active_window/object_extraction/mesh_object_extractor.h"
 
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <numeric>
 #include <sstream>
 
+#include <opencv2/opencv.hpp>
 #include <spark_dsg/colormaps.h>
 
 #include "khronos/active_window/data/reconstruction_types.h"
@@ -60,6 +65,10 @@ void declare_config(MeshObjectExtractor::Config& config) {
   field(config.object_reconstruction_resolution, "object_reconstruction_resolution");
   field(config.min_reconstruction_resolution, "min_reconstruction_resolution");
   field(config.visualize_classification, "visualize_classification");
+  field(config.object_image_output_path, "object_image_output_path");
+  field(config.save_object_images, "save_object_images");
+  field(config.save_all_frames, "save_all_frames");
+  field(config.image_selection_criteria, "image_selection_criteria");
   field(config.projective_integrator, "projective_integrator");
   field(config.mesh_integrator, "mesh_integrator");
 
@@ -309,7 +318,235 @@ KhronosObjectAttributes::Ptr MeshObjectExtractor::extractStaticObject(
   for (Point& point : object->mesh.points) {
     point -= offset;
   }
+
+  // Save images.
+  if (config.save_object_images && !config.object_image_output_path.empty()) {
+    saveObjectImages(track, frames, object.get());
+  }
+
   return object;
+}
+
+void MeshObjectExtractor::saveObjectImages(
+    const Track& track,
+    const std::vector<std::pair<FrameData::Ptr, int>>& frames,
+    KhronosObjectAttributes* object) const {
+  if (frames.empty()) {
+    return;
+  }
+
+  // Construct directory path: <vis_path>/temp/O_<track_id>
+  // We use a temp folder to avoid race conditions/conflicts with backend renaming.
+  // The backend will move this to <vis_path>/O_<node_id> once validated.
+  std::stringstream ss;
+  ss << "O_" << track.id;
+  std::string object_dir_name = ss.str();
+
+  std::filesystem::path temp_dir = std::filesystem::path(config.object_image_output_path) / "temp";
+  std::filesystem::path object_dir = temp_dir / object_dir_name;
+
+  if (!std::filesystem::exists(temp_dir)) {
+    std::filesystem::create_directories(temp_dir);
+  }
+  if (!std::filesystem::exists(object_dir)) {
+    std::filesystem::create_directories(object_dir);
+  }
+
+  object->image_folder = object_dir.string();
+
+  // Select frames to save.
+  std::vector<size_t> indices_to_save;
+  if (config.save_all_frames) {
+    indices_to_save.resize(frames.size());
+    std::iota(indices_to_save.begin(), indices_to_save.end(), 0);
+  } else {
+    // Select one frame.
+    size_t best_idx = 0;
+    float best_value = -1.0f;
+
+    for (size_t i = 0; i < frames.size(); ++i) {
+      const auto& [frame, id] = frames[i];
+      const auto it = std::find_if(frame->semantic_clusters.begin(),
+                                   frame->semantic_clusters.end(),
+                                   [id](const auto& cluster) { return cluster.id == id; });
+      if (it == frame->semantic_clusters.end()) {
+        continue;
+      }
+
+      float value = 0.0f;
+      if (config.image_selection_criteria == "HIGH_CONFIDENCE") {
+        // Placeholder: confidence not readily available in cluster, might use track confidence?
+        // For now fallback to size.
+        value = it->pixels.size();
+      } else {
+        // LARGEST_BBOX
+        value = it->bounding_box.volume();
+      }
+
+      if (value > best_value) {
+        best_value = value;
+        best_idx = i;
+      }
+    }
+    indices_to_save.push_back(best_idx);
+  }
+
+  // Save selected frames.
+  for (size_t i : indices_to_save) {
+    const auto& [frame, id] = frames[i];
+    const std::string filename_base =
+        object_dir.string() + "/frame_" + std::to_string(frame->input.timestamp_ns);
+
+    // Save RGB.
+    cv::imwrite(filename_base + "_rgb.jpg", frame->input.color_image);
+
+    // Save Depth.
+    cv::imwrite(filename_base + "_depth.png", frame->input.depth_image);
+
+    // Save Mask (re-create from cluster pixels).
+    cv::Mat mask = cv::Mat::zeros(frame->input.color_image.size(), CV_8UC1);
+    const auto it = std::find_if(frame->semantic_clusters.begin(),
+                                 frame->semantic_clusters.end(),
+                                 [id](const auto& cluster) { return cluster.id == id; });
+
+    BoundingBox bbox;
+    if (it != frame->semantic_clusters.end()) {
+      bbox = it->bounding_box;
+      for (const auto& pixel : it->pixels) {
+        if (pixel.u >= 0 && pixel.u < mask.cols && pixel.v >= 0 && pixel.v < mask.rows) {
+          mask.at<uint8_t>(pixel.v, pixel.u) = 255;
+        }
+      }
+    }
+
+    // Save RGB image (Convert RGB to BGR for OpenCV)
+    cv::Mat rgb_image;
+    if (frame->input.color_image.channels() == 3) {
+      cv::cvtColor(frame->input.color_image, rgb_image, cv::COLOR_RGB2BGR);
+    } else {
+      rgb_image = frame->input.color_image.clone();
+    }
+    cv::imwrite(filename_base + "_rgb.jpg", rgb_image);
+
+    // Save Depth image
+    cv::imwrite(filename_base + "_depth.png", frame->input.depth_image);
+
+    // Save Mask image
+    // Mask is in frame coordinates, same as RGB
+    // Compute 2D Bounding Box from Mask
+    int min_x = mask.cols;
+    int max_x = 0;
+    int min_y = mask.rows;
+    int max_y = 0;
+    bool has_pixels = false;
+
+    // Simple iteration to find 2D bbox
+    for (int r = 0; r < mask.rows; ++r) {
+      const uint8_t* row_ptr = mask.ptr<uint8_t>(r);
+      for (int c = 0; c < mask.cols; ++c) {
+        if (row_ptr[c] > 0) {
+          if (c < min_x) min_x = c;
+          if (c > max_x) max_x = c;
+          if (r < min_y) min_y = r;
+          if (r > max_y) max_y = r;
+          has_pixels = true;
+        }
+      }
+    }
+
+    if (!has_pixels) {
+      min_x = 0;
+      max_x = 0;
+      min_y = 0;
+      max_y = 0;
+    }
+
+    cv::imwrite(filename_base + "_mask.png", mask);
+
+    // Save metadata.
+    // TODO(harel): Use a proper JSON library if available, or manual simple JSON.
+    std::ofstream json_file(filename_base + "_meta.json");
+    json_file << "{\n";
+    json_file << "  \"timestamp_ns\": " << frame->input.timestamp_ns << ",\n";
+
+    // Compute min/max from corners (works for AABB and OBB)
+    const auto corners = bbox.corners();
+    Eigen::Vector3f min_c = corners[0];
+    Eigen::Vector3f max_c = corners[0];
+    for (const auto& c : corners) {
+      min_c = min_c.cwiseMin(c);
+      max_c = max_c.cwiseMax(c);
+    }
+
+    json_file << "  \"bbox_min\": [" << min_c.x() << ", " << min_c.y() << ", " << min_c.z()
+              << "],\n";
+    json_file << "  \"bbox_max\": [" << max_c.x() << ", " << max_c.y() << ", " << max_c.z()
+              << "],\n";
+
+    json_file << "  \"bbox_2d\": {\n";
+    json_file << "    \"min_x\": " << min_x << ",\n";
+    json_file << "    \"min_y\": " << min_y << ",\n";
+    json_file << "    \"max_x\": " << max_x << ",\n";
+    json_file << "    \"max_y\": " << max_y << "\n";
+    json_file << "  },\n";
+
+    // Store relative path to mask (filename only as it is in same dir)
+    std::filesystem::path mask_path(filename_base + "_mask.png");
+    json_file << "  \"mask_file\": \"" << mask_path.filename().string() << "\",\n";
+
+    // RLE Encode Mask (COCO style: counts [n0, n1, n0, n1...])
+    // Assuming flattened column-major order is standard for COCO, but we'll do row-major for
+    // simplicity unless specified. User just asked for "pixel data", usually row-major raster order
+    // is easiest to interpret.
+    std::vector<int> rle_counts;
+    if (mask.total() > 0) {
+      int current_val = 0;  // Start assuming 0 (background)
+      int current_count = 0;
+
+      // Flattened access
+      for (int i = 0; i < mask.rows * mask.cols; ++i) {
+        // Access in row-major
+        int r = i / mask.cols;
+        int c = i % mask.cols;
+        uint8_t pixel = mask.at<uint8_t>(r, c);
+        int val = (pixel > 0) ? 1 : 0;
+
+        if (rle_counts.empty()) {
+          // First run
+          if (val != current_val) {
+            // If starts with 1, first count (for 0) is 0
+            rle_counts.push_back(0);
+            current_val = 1;
+          }
+          current_count = 1;
+          rle_counts.push_back(0);  // Placeholder, will update
+        } else {
+          if (val == current_val) {
+            current_count++;
+          } else {
+            rle_counts.back() = current_count;
+            rle_counts.push_back(0);  // New count
+            current_count = 1;
+            current_val = val;
+          }
+        }
+      }
+      if (!rle_counts.empty()) {
+        rle_counts.back() = current_count;
+      }
+    }
+
+    // Write RLE
+    json_file << "  \"mask_rle\": [";
+    for (size_t i = 0; i < rle_counts.size(); ++i) {
+      json_file << rle_counts[i];
+      if (i < rle_counts.size() - 1) json_file << ", ";
+    }
+    json_file << "]\n";
+
+    json_file << "}\n";
+    json_file.close();
+  }
 }
 
 std::vector<std::pair<FrameData::Ptr, int>> MeshObjectExtractor::collectSemanticFrames(
