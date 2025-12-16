@@ -356,7 +356,7 @@ void MeshObjectExtractor::saveObjectImages(
 
   // Select frames to save.
   std::vector<size_t> indices_to_save;
-  if (config.save_all_frames) {
+  if (config.image_selection_criteria == "ALL") {
     indices_to_save.resize(frames.size());
     std::iota(indices_to_save.begin(), indices_to_save.end(), 0);
   } else {
@@ -378,8 +378,10 @@ void MeshObjectExtractor::saveObjectImages(
         // Placeholder: confidence not readily available in cluster, might use track confidence?
         // For now fallback to size.
         value = it->pixels.size();
+      } else if (config.image_selection_criteria == "SEGMENT_SIZE") {
+        value = it->pixels.size();
       } else {
-        // LARGEST_BBOX
+        // LARGEST_BBOX (default)
         value = it->bounding_box.volume();
       }
 
