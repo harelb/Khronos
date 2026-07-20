@@ -82,9 +82,6 @@ class MaxIoUTracker : public Tracker {
     // Allows the dynamic object to move at mostthis distance [m] between frames.
     float max_dynamic_distance = 1.f;
 
-    // Duration [s] until tracks become deactivated, leaving the active window.
-    float temporal_window = 3.f;
-
     // Number of times a track has to be observed to be considered existent.
     int min_num_observations = 20;
 
@@ -100,20 +97,24 @@ class MaxIoUTracker : public Tracker {
   virtual ~MaxIoUTracker() = default;
 
   // Inputs.
-  void processInput(FrameData& data) override;
+  void processInput(FrameData& data, Tracks& tracks) override;
 
   // Processing.
   void setup();
   void setupTrackMeasurements(FrameData& data) const;
-  void associateTracks(const FrameData& data);
-  void associateSemanticTracks(const FrameData& data);
-  void associateDynamicTracks(const FrameData& data);
+  void associateTracks(const FrameData& data, Tracks& tracks);
+  void associateSemanticTracks(const FrameData& data, Tracks& tracks);
+  void associateDynamicTracks(const FrameData& data, Tracks& tracks);
   void assignStaticTracksToCluster(const FrameData& data,
+                                   Tracks& tracks,
                                    std::unordered_set<int>& associated_objects);
   void assignClustersToStaticTrack(const FrameData& data,
+                                   Tracks& tracks,
                                    std::unordered_set<int>& associated_objects);
-  void updateTrackingDuration();
-  Track& addNewTrack(const FrameData& data, const MeasurementCluster& observation, bool is_dynamic);
+  Track& addNewTrack(const FrameData& data,
+                     const MeasurementCluster& observation,
+                     Tracks& tracks,
+                     bool is_dynamic);
   void updateTrack(const FrameData& data,
                    const MeasurementCluster& observation,
                    Track& track,

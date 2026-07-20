@@ -56,14 +56,12 @@ void declare_config(ExternalTracker::Config& config) {
   using namespace config;
   name("ExternalTracker");
   field(config.verbosity, "verbosity");
-  field(config.temporal_window, "temporal_window", "s");
   field(config.min_num_observations, "min_num_observations", "frames");
-  check(config.temporal_window, GT, 0.f, "temporal_window");
 }
 
 ExternalTracker::ExternalTracker(const Config& config) : config(config::checkValid(config)) {}
 
-void ExternalTracker::processInput(FrameData& data) {
+void ExternalTracker::processInput(FrameData& data, Tracks& tracks) {
   processing_stamp_ = data.input.timestamp_ns;
   Timer timer("tracking/all", processing_stamp_);
 
@@ -75,17 +73,13 @@ void ExternalTracker::processInput(FrameData& data) {
 
   // Associate current objects to existing tracks and create new tracks for
   // unassociated objects.
-  associateTracks(data);
-
-  // Update which tracks are still active. Tracks labeled inactive will be removed by
-  // the active window.
-  updateTrackingDuration();
+  associateTracks(data, tracks);
 }
 
-void ExternalTracker::associateTracks(const FrameData& data) {
+void ExternalTracker::associateTracks(const FrameData& data, Tracks& tracks) {
   // Associate tracks exactly if the IDs are the same.
   std::unordered_set<int> associated_objects;
-  for (Track& track : tracks_) {
+  for (Track& track : tracks) {
     if (track.is_dynamic) {
       continue;
     }
@@ -108,13 +102,13 @@ void ExternalTracker::associateTracks(const FrameData& data) {
   // Create new tracks for unassociated objects.
   for (const auto& cluster : data.semantic_clusters) {
     if (associated_objects.find(cluster.id) == associated_objects.end()) {
-      addNewTrack(cluster);
+      addNewTrack(cluster, tracks);
     }
   }
 }
 
-void ExternalTracker::addNewTrack(const MeasurementCluster& observation) {
-  auto& track = tracks_.emplace_back();
+void ExternalTracker::addNewTrack(const MeasurementCluster& observation, Tracks& tracks) {
+  auto& track = tracks.emplace_back();
   track.is_dynamic = false;
   track.id = observation.id;
   track.first_seen = processing_stamp_;
@@ -130,14 +124,6 @@ void ExternalTracker::updateTrack(const MeasurementCluster& observation, Track& 
   track.observations.emplace_back(processing_stamp_, observation.id, -1);
   track.confidence = std::min(
       static_cast<float>(track.observations.size()) / (config.min_num_observations * 2), 1.f);
-}
-
-void ExternalTracker::updateTrackingDuration() {
-  // Label tracks that exit the temporal window as inactive.
-  const TimeStamp min_time = processing_stamp_ - fromSeconds(config.temporal_window);
-  for (Track& track : tracks_) {
-    track.is_active = track.last_seen >= min_time;
-  }
 }
 
 }  // namespace khronos

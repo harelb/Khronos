@@ -55,8 +55,6 @@ class ExternalTracker : public Tracker {
   struct Config {
     int verbosity = hydra::GlobalInfo::instance().getConfig().default_verbosity;
 
-    // Duration [s] until tracks become deactivated, leaving the active window.
-    float temporal_window = 3.f;
 
     // Number of times a track has to be observed to be considered existent.
     int min_num_observations = 20;
@@ -67,13 +65,12 @@ class ExternalTracker : public Tracker {
   virtual ~ExternalTracker() = default;
 
   // Inputs.
-  void processInput(FrameData& data) override;
+  void processInput(FrameData& data, Tracks& tracks) override;
 
  protected:
   // Processing.
-  void associateTracks(const FrameData& data);
-  void updateTrackingDuration();
-  void addNewTrack(const MeasurementCluster& observation);
+  void associateTracks(const FrameData& data, Tracks& tracks);
+  void addNewTrack(const MeasurementCluster& observation, Tracks& tracks);
   void updateTrack(const MeasurementCluster& observation, Track& track) const;
 
  private:

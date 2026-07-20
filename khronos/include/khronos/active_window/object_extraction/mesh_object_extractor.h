@@ -44,6 +44,7 @@
 
 #include <config_utilities/config_utilities.h>
 #include <hydra/common/global_info.h>
+#include <hydra/input/sensor_map.h>
 #include <hydra/reconstruction/mesh_integrator.h>
 
 #include "khronos/active_window/integration/object_integrator.h"
@@ -95,7 +96,19 @@ class MeshObjectExtractor : public ObjectExtractor {
     // for debugging.
     bool visualize_classification = false;
 
-    hydra::ProjectiveIntegrator::Config projective_integrator;
+    // Path to save object images to.
+    std::string object_image_output_path = "";
+
+    // Whether to save object images.
+    bool save_object_images = false;
+
+    // Whether to save all frames or just one.
+    bool save_all_frames = false;
+
+    // Selection criteria if saving only one frame: "LARGEST_BBOX" or "HIGH_CONFIDENCE".
+    std::string image_selection_criteria = "LARGEST_BBOX";
+
+    hydra::SensorMap<ObjectIntegrator>::Config projective_integrator;
     hydra::MeshIntegratorConfig mesh_integrator;
   } const config;
 
@@ -127,6 +140,13 @@ class MeshObjectExtractor : public ObjectExtractor {
    * @brief Check if a track meets the minimum criteria for object extraction.
    */
   bool trackIsValid(const Track& track) const;
+
+  /**
+   * @brief Save images for the extracted object.
+   */
+  void saveObjectImages(const Track& track,
+                        const std::vector<std::pair<FrameData::Ptr, int>>& frames,
+                        KhronosObjectAttributes* object) const;
 
   /**
    * @brief Get a human readable name for the given track for printing.

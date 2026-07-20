@@ -37,7 +37,10 @@
 
 #include "khronos/active_window/object_extraction/object_worker_pool.h"
 
+#include <memory>
+
 #include <config_utilities/config.h>
+#include <spark_dsg/node_attributes.h>
 
 namespace khronos {
 
@@ -108,7 +111,7 @@ KhronosObjectAttributes::Ptr ObjectWorkerPool::runBlocking(const Track& track,
 
 void ObjectWorkerPool::fill(hydra::LayerUpdate& update) {
   std::lock_guard<std::mutex> lock(output_mutex_);
-  std::move(output_.begin(), output_.end(), std::back_inserter(update.attributes));
+  std::move(output_.begin(), output_.end(), std::back_inserter(update.updates));
   output_.clear();
 }
 
@@ -136,12 +139,17 @@ void ObjectWorkerPool::runOnce(Request::Ptr req) const {
   auto attrs = extractor_->extractObject(req->track, req->frame_data);
   const auto stop = std::chrono::high_resolution_clock::now();
 
-  ElapsedTimeRecorder::instance().record("active_window/extract_object", req->stamp, start - stop);
+  ElapsedTimeRecorder::instance().record("active_window/extract_object", req->stamp, stop - start);
 
   curr_workers_--;
   if (attrs) {
     std::lock_guard<std::mutex> lock(output_mutex_);
-    output_.emplace_back(std::move(attrs));
+    output_.emplace_back(
+        hydra::NodeUpdate{std::shared_ptr<spark_dsg::NodeAttributes>(std::move(attrs)),
+                          static_cast<size_t>(req->track.id)});
+  } else {
+    output_.emplace_back(hydra::NodeUpdate{
+        nullptr, static_cast<size_t>(req->track.id), hydra::NodeUpdate::UpdateType::Delete});
   }
 }
 

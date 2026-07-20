@@ -11,8 +11,10 @@
 #include <pcl/filters/extract_indices.h>
 #include <pcl/io/ply_io.h>
 #include <pcl/point_types.h>
+#define PCL_NO_PRECOMPILE
 #include <pcl/search/kdtree.h>
 #include <pcl/segmentation/extract_clusters.h>
+#undef PCL_NO_PRECOMPILE
 #include <spark_dsg/colormaps.h>
 
 #include "khronos_eval/utils/io_utils.h"
@@ -55,7 +57,7 @@ void declare_config(TesseGroundTruthBuilder::Config& config) {
 TesseGroundTruthBuilder::TesseGroundTruthBuilder(const Config& config)
     : config(config::checkValid(config)),
       color_map_(*hydra::SemanticColorMap::fromCsv(config.semantic_colors_file)),
-      label_space_(config::fromYamlFile<hydra::LabelSpaceConfig>(config.label_space_file)),
+      label_space_(config::fromYamlFile<hydra::Labelspace>(config.label_space_file)),
       label_remapper_(config.label_remap_file) {}
 
 void TesseGroundTruthBuilder::run() {
@@ -387,12 +389,12 @@ bool TesseGroundTruthBuilder::loadPoints(Points& vertices, Labels& labels, Label
   is_object.resize(labels.size());
   if (config.unknown_label_is_background) {
     for (size_t i = 0; i < labels.size(); ++i) {
-      is_object[i] = label_space_.isObject(labels[i]);
+      is_object[i] = label_space_.object_labels.count(labels[i]);
     }
   } else {
     // Will be filtered by object extractor.
     for (size_t i = 0; i < labels.size(); ++i) {
-      is_object[i] = label_space_.isObject(labels[i]);
+      is_object[i] = label_space_.object_labels.count(labels[i]);
     }
   }
   std::cout << "Computed object and background labels." << std::endl;

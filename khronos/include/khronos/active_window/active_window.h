@@ -49,6 +49,7 @@
 #include <hydra/active_window/active_window_module.h>
 #include <hydra/common/global_info.h>
 #include <hydra/common/output_sink.h>
+#include <hydra/input/sensor_map.h>
 #include <hydra/reconstruction/mesh_integrator.h>
 #include <hydra/reconstruction/projective_integrator.h>
 
@@ -63,6 +64,24 @@
 #include "khronos/common/common_types.h"
 
 namespace khronos {
+
+struct SensorProcessor {
+  struct Config {
+    hydra::ProjectiveIntegrator::Config projective_integrator;
+    config::VirtualConfig<MotionDetector> motion_detector;
+    config::VirtualConfig<ObjectDetector> object_detector;
+    config::VirtualConfig<Tracker> tracker;
+  } const config;
+
+  explicit SensorProcessor(const Config& config);
+
+  hydra::ProjectiveIntegrator integrator;
+  std::unique_ptr<MotionDetector> motion_detector;
+  std::unique_ptr<ObjectDetector> object_detector;
+  std::unique_ptr<Tracker> tracker;
+};
+
+void declare_config(SensorProcessor::Config& config);
 
 class ActiveWindow : public hydra::ActiveWindowModule {
  public:
@@ -80,16 +99,16 @@ class ActiveWindow : public hydra::ActiveWindowModule {
     bool detach_object_extraction = true;
 
     // Configs of the sub-modules to create.
-    hydra::ProjectiveIntegrator::Config projective_integrator;
+    hydra::SensorMap<SensorProcessor>::Config processors;
     TrackingIntegrator::Config tracking_integrator;
-    config::VirtualConfig<MotionDetector> motion_detector;
-    config::VirtualConfig<ObjectDetector> object_detector;
-    config::VirtualConfig<Tracker> tracker;
     config::VirtualConfig<ObjectExtractor> object_extractor;
     ObjectWorkerPool::Config extraction_worker;
     hydra::MeshIntegratorConfig mesh_integrator;
     FrameDataBuffer::Config frame_data_buffer;
     std::vector<KhronosSink::Factory> khronos_sinks;
+
+    //! Minimum confidence before object is forwarded to graph builder
+    float min_object_confidence = 0.5f;  
 
     // override layer defaults of Hydra
     Config() : hydra::ActiveWindowModule::Config(false, true) {}
@@ -105,7 +124,7 @@ class ActiveWindow : public hydra::ActiveWindowModule {
   VolumetricMap& getMap() { return map_; }
   const VolumetricMap& getMap() const { return map_; }
   const FrameData& getLatestFrameData() const { return frame_data_buffer_.getLatestData(); }
-  const Tracks& getTracks() const { return tracker_->getTracks(); }
+  const Tracks& getTracks() const { return tracks_; }
 
   // Module setup.
   /**
@@ -146,7 +165,7 @@ class ActiveWindow : public hydra::ActiveWindowModule {
    * @brief Update the volumetric map with the given data.
    * @param data The data to use for updating the map.
    */
-  void updateMap(const FrameData& data);
+  void updateMap(const SensorProcessor& processor, const FrameData& data);
 
   /**
    * @brief Extract all objects and background meshes that have turned inactive,
@@ -158,6 +177,11 @@ class ActiveWindow : public hydra::ActiveWindowModule {
   hydra::ActiveWindowOutput::Ptr extractOutputData(const FrameData& data, bool threaded);
 
   /**
+   * @brief Update the tracking status of all blocks and tracks based on the given data. This will update the active/inactive status of blocks and tracks, but will not reset any voxels or tracks. This should be called after meshing and before extracting output data to ensure that the correct objects are extracted and the correct blocks are archived. 
+   */
+  void updateTrackingStatus(const FrameData& data);
+
+  /**
    * @brief Extract all objects that have turned inactive, i.e. are exiting the
    * active and meet the minimum confidence requirement.
    * @param output The output data to store the extracted objects in.
@@ -166,12 +190,10 @@ class ActiveWindow : public hydra::ActiveWindowModule {
 
  protected:
   // Members.
-  hydra::ProjectiveIntegrator integrator_;
+  hydra::SensorMap<SensorProcessor> processors_;
   TrackingIntegrator tracking_integrator_;
   hydra::MeshIntegrator mesh_integrator_;
-  std::unique_ptr<MotionDetector> motion_detector_;
-  std::unique_ptr<ObjectDetector> object_detector_;
-  std::unique_ptr<Tracker> tracker_;
+
   ObjectWorkerPool extraction_worker_;
 
   std::mutex mutex_;
@@ -179,6 +201,7 @@ class ActiveWindow : public hydra::ActiveWindowModule {
 
   // Internal processing.
   // Keep frames in buffer for later extraction of objects.
+  Tracks tracks_;
   FrameDataBuffer frame_data_buffer_;
 
   // Variables.
