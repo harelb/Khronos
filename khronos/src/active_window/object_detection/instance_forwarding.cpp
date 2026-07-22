@@ -66,6 +66,10 @@ void declare_config(InstanceForwarding::Config& config) {
   field(config.depth_mad_k, "depth_mad_k");
   field(config.depth_mad_floor_m, "depth_mad_floor_m", "m");
   field(config.depth_filter_min_pixels, "depth_filter_min_pixels");
+
+  check(config.depth_mad_k, GE, 0.f, "depth_mad_k");
+  check(config.depth_mad_floor_m, GE, 0.f, "depth_mad_floor_m");
+  check(config.depth_filter_min_pixels, GE, 1, "depth_filter_min_pixels");
 }
 
 InstanceForwarding::InstanceForwarding(const Config& config)
@@ -135,8 +139,13 @@ void InstanceForwarding::extractSemanticClusters(FrameData& data) {
       if (static_cast<int>(pixels.size()) < config.depth_filter_min_pixels) {
         continue;
       }
-      // Gather valid ranges for the median; invalid (<=0 or NaN) pixels are
-      // always rejected below.
+      // Gather valid ranges for the median. Invalid (<=0 or NaN) pixels are
+      // only rejected below when the filter actually runs on this cluster
+      // (i.e. this cluster and its valid-range count both clear
+      // depth_filter_min_pixels, checked above/below); small or
+      // low-validity clusters skip the filter entirely via the `continue`s
+      // above and keep all their pixels, invalid ranges included — this
+      // matches legacy (pre-filter) behavior for those clusters.
       std::vector<float> ranges;
       ranges.reserve(pixels.size());
       for (const auto& px : pixels) {

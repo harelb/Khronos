@@ -259,4 +259,43 @@ TEST(InstanceForwardingDepthFilter, InvalidRangesRejected) {
   }
 }
 
+// Case 6: a cluster that starts ABOVE min_cluster_size (35 px, gate is 30) but
+// whose contamination rejection (10 px at a far, outlier range) drops the
+// survivor count (25 px) below the gate. The cluster must NOT appear in
+// semantic_clusters at all -- it dies via the pre-existing min_cluster_size
+// gate, same as any other undersized cluster, not via some special-cased
+// depth-filter rejection path. The 10 contaminated pixels must still be
+// zeroed in object_image (the filter itself ran and rejected them; the size
+// gate is a separate, later check).
+TEST(InstanceForwardingDepthFilter, SliverDiesViaSizeGateAfterContaminationRejection) {
+  const auto camera = makeCamera();
+  const auto pixels = makeContaminatedCluster(25, 3.0f, 10, 6.0f);
+  ASSERT_EQ(pixels.size(), 35u);
+  auto input = makeInputData(camera, pixels);
+  FrameData data(input);
+
+  auto config = makeConfig(/*enable_depth_mode_filter=*/true);
+  config.min_cluster_size = 30;
+  ASSERT_GT(static_cast<int>(pixels.size()), config.min_cluster_size)
+      << "cluster must start above the size gate";
+  ASSERT_LT(static_cast<int>(pixels.size()) - 10, config.min_cluster_size)
+      << "post-rejection survivor count must fall below the size gate";
+  InstanceForwarding detector(config);
+  const hydra::VolumetricMap::Config map_config;
+  hydra::VolumetricMap map(map_config);
+  detector.processInput(map, data);
+
+  // Dies via the size gate: never makes it into semantic_clusters.
+  const auto* cluster = findCluster(data.semantic_clusters, 1);
+  EXPECT_EQ(cluster, nullptr);
+
+  // But the depth filter itself still ran and zeroed the rejected pixels.
+  for (const auto& px : pixels) {
+    const bool should_be_zeroed = px.range == 6.0f;
+    EXPECT_EQ(data.object_image.at<FrameData::ObjectImageType>(px.v, px.u) == 0,
+              should_be_zeroed)
+        << "pixel (" << px.u << "," << px.v << ") range=" << px.range;
+  }
+}
+
 }  // namespace khronos
