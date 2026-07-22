@@ -92,6 +92,16 @@ class InstanceForwarding : public ObjectDetector {
     // Background is specified by the following embedding group (prompts)
     config::VirtualConfig<hydra::EmbeddingGroup> background;
     config::VirtualConfig<hydra::EmbeddingDistance> metric{hydra::CosineDistance::Config()};
+
+    // Depth-mode consistency filter (2026-07 spec: perception-depth-filter).
+    // Rejects cluster pixels whose range deviates from the cluster's median
+    // by more than max(depth_mad_k * MAD, depth_mad_floor_m). Kills mask
+    // bleed onto farther floor/background pixels that otherwise drags the
+    // object TSDF extent (and hence the DSG centroid) beyond the object.
+    bool enable_depth_mode_filter = true;
+    float depth_mad_k = 3.0f;
+    float depth_mad_floor_m = 0.15f;
+    int depth_filter_min_pixels = 10;
   } const config;
 
   // Construction.

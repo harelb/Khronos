@@ -37,6 +37,8 @@
 
 #include "khronos/active_window/object_detection/instance_forwarding.h"
 
+#include <algorithm>
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -60,6 +62,10 @@ void declare_config(InstanceForwarding::Config& config) {
   field(config.background, "background");
   config.metric.setOptional();
   field(config.metric, "metric");
+  field(config.enable_depth_mode_filter, "enable_depth_mode_filter");
+  field(config.depth_mad_k, "depth_mad_k");
+  field(config.depth_mad_floor_m, "depth_mad_floor_m", "m");
+  field(config.depth_filter_min_pixels, "depth_filter_min_pixels");
 }
 
 InstanceForwarding::InstanceForwarding(const Config& config)
@@ -82,7 +88,14 @@ void InstanceForwarding::processInput(const VolumetricMap& /* map */, FrameData&
 void InstanceForwarding::extractSemanticClusters(FrameData& data) {
   // Forward the semantic image from the input.
   // NOTE(lschmid): This assumes both images have the same type.
-  data.object_image = data.input.label_image;
+  // NOTE(pre-existing behavior): object_image = label_image is a SHALLOW
+  // cv::Mat copy — the range/background gates above never actually removed
+  // pixels from object_image (the at<>() write below is a no-op into the
+  // shared buffer). We preserve that exact behavior when the depth filter
+  // is off. When it is on, we clone so rejected pixels can be zeroed for
+  // the downstream object integrator.
+  data.object_image =
+      config.enable_depth_mode_filter ? data.input.label_image.clone() : data.input.label_image;
 
   // Extract clusters.
   std::unordered_map<FrameData::ObjectImageType, Pixels> clusters;
@@ -114,6 +127,51 @@ void InstanceForwarding::extractSemanticClusters(FrameData& data) {
 
       data.object_image.at<FrameData::ObjectImageType>(v, u) = id;
       clusters[id].emplace_back(u, v);
+    }
+  }
+
+  if (config.enable_depth_mode_filter) {
+    for (auto& [id, pixels] : clusters) {
+      if (static_cast<int>(pixels.size()) < config.depth_filter_min_pixels) {
+        continue;
+      }
+      // Gather valid ranges for the median; invalid (<=0 or NaN) pixels are
+      // always rejected below.
+      std::vector<float> ranges;
+      ranges.reserve(pixels.size());
+      for (const auto& px : pixels) {
+        const float r = data.input.range_image.at<InputData::RangeType>(px.v, px.u);
+        if (std::isfinite(r) && r > 0.f) {
+          ranges.push_back(r);
+        }
+      }
+      if (static_cast<int>(ranges.size()) < config.depth_filter_min_pixels) {
+        continue;  // too few valid ranges for a meaningful mode
+      }
+      const auto mid = ranges.begin() + ranges.size() / 2;
+      std::nth_element(ranges.begin(), mid, ranges.end());
+      const float median = *mid;
+      std::vector<float> devs;
+      devs.reserve(ranges.size());
+      for (const float r : ranges) {
+        devs.push_back(std::abs(r - median));
+      }
+      const auto dmid = devs.begin() + devs.size() / 2;
+      std::nth_element(devs.begin(), dmid, devs.end());
+      const float mad = *dmid;
+      const float threshold = std::max(config.depth_mad_k * mad, config.depth_mad_floor_m);
+
+      Pixels kept;
+      kept.reserve(pixels.size());
+      for (const auto& px : pixels) {
+        const float r = data.input.range_image.at<InputData::RangeType>(px.v, px.u);
+        if (std::isfinite(r) && r > 0.f && std::abs(r - median) <= threshold) {
+          kept.push_back(px);
+        } else {
+          data.object_image.at<FrameData::ObjectImageType>(px.v, px.u) = 0;
+        }
+      }
+      pixels = std::move(kept);
     }
   }
 
