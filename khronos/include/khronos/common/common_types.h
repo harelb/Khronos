@@ -107,7 +107,7 @@ using hydra::SemanticBlock;
 using hydra::SemanticLayer;
 using hydra::SemanticVoxel;
 
-using hydra::Mesh;
+using spark_dsg::Mesh;  // was hydra::Mesh via dsg_types.h, deleted upstream in #174
 using hydra::MeshBlock;
 using hydra::MeshLayer;
 
