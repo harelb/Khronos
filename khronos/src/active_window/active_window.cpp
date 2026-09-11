@@ -152,6 +152,9 @@ hydra::ActiveWindowOutput::Ptr ActiveWindow::spinOnce(const hydra::InputPacket& 
 
   // Create a data package for the given input.
   std::shared_ptr<FrameData> data = createData(input);
+  if (!data) {
+    return nullptr;
+  }
   const auto sensor_name = data->input.getSensor().name;
   const auto processor = processors_.get(sensor_name);
   if (!processor) {
