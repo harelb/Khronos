@@ -142,8 +142,8 @@ void ObjectWorkerPool::runOnce(Request::Ptr req) const {
   ElapsedTimeRecorder::instance().record("active_window/extract_object", req->stamp, stop - start);
 
   curr_workers_--;
+  std::lock_guard<std::mutex> lock(output_mutex_);
   if (attrs) {
-    std::lock_guard<std::mutex> lock(output_mutex_);
     output_.emplace_back(
         hydra::NodeUpdate{std::shared_ptr<spark_dsg::NodeAttributes>(std::move(attrs)),
                           static_cast<size_t>(req->track.id)});
