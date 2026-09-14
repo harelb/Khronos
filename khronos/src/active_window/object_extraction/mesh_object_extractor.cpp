@@ -44,6 +44,9 @@
 #include <sstream>
 
 #include <opencv2/opencv.hpp>
+#include "khronos/utils/depth_image.h"
+#include "hydra/input/camera.h"
+#include <iomanip>
 #include <spark_dsg/colormaps.h>
 
 #include "khronos/active_window/data/reconstruction_types.h"
@@ -399,12 +402,6 @@ void MeshObjectExtractor::saveObjectImages(
     const std::string filename_base =
         object_dir.string() + "/frame_" + std::to_string(frame->input.timestamp_ns);
 
-    // Save RGB.
-    cv::imwrite(filename_base + "_rgb.jpg", frame->input.color_image);
-
-    // Save Depth.
-    cv::imwrite(filename_base + "_depth.png", frame->input.depth_image);
-
     // Save Mask (re-create from cluster pixels).
     cv::Mat mask = cv::Mat::zeros(frame->input.color_image.size(), CV_8UC1);
     const auto it = std::find_if(frame->semantic_clusters.begin(),
@@ -431,7 +428,7 @@ void MeshObjectExtractor::saveObjectImages(
     cv::imwrite(filename_base + "_rgb.jpg", rgb_image);
 
     // Save Depth image
-    cv::imwrite(filename_base + "_depth.png", frame->input.depth_image);
+    cv::imwrite(filename_base + "_depth.png", depthMillimetres(frame->input.depth_image));
 
     // Save Mask image
     // Mask is in frame coordinates, same as RGB
@@ -468,8 +465,37 @@ void MeshObjectExtractor::saveObjectImages(
     // Save metadata.
     // TODO(harel): Use a proper JSON library if available, or manual simple JSON.
     std::ofstream json_file(filename_base + "_meta.json");
+    json_file << std::setprecision(17);
     json_file << "{\n";
     json_file << "  \"timestamp_ns\": " << frame->input.timestamp_ns << ",\n";
+    json_file << "  \"depth_scale\": 0.001,\n";
+    json_file << "  \"depth_encoding\": \"16UC1\",\n";
+    json_file << "  \"depth_invalid\": 0,\n";
+    const auto write_transform = [&](const auto& transform) {
+      json_file << "[";
+      for (int row = 0; row < 4; ++row) {
+        if (row) json_file << ",";
+        json_file << "[";
+        for (int col = 0; col < 4; ++col) {
+          if (col) json_file << ",";
+          json_file << transform.matrix()(row, col);
+        }
+        json_file << "]";
+      }
+      json_file << "]";
+    };
+    json_file << "  \"world_T_body\": ";
+    write_transform(frame->input.world_T_body);
+    json_file << ",\n";
+    if (const auto* camera = dynamic_cast<const hydra::Camera*>(&frame->input.getSensor())) {
+      const auto& calibration = camera->getConfig();
+      json_file << "  \"camera\": {\"fx\":" << calibration.fx
+                << ",\"fy\":" << calibration.fy << ",\"cx\":" << calibration.cx
+                << ",\"cy\":" << calibration.cy << ",\"width\":" << calibration.width
+                << ",\"height\":" << calibration.height << ",\"body_T_sensor\":";
+      write_transform(camera->body_T_sensor());
+      json_file << "},\n";
+    }
 
     // Compute min/max from corners (works for AABB and OBB)
     const auto corners = bbox.corners();
