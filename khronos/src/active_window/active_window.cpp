@@ -38,6 +38,7 @@
 #include "khronos/active_window/active_window.h"
 
 #include <hydra/common/global_info.h>
+#include <hydra/common/pipeline_queues.h>
 #include <hydra/input/input_conversion.h>
 #include <hydra/input/sensor_utilities.h>
 #include <hydra/reconstruction/integration_masking.h>
@@ -194,6 +195,17 @@ hydra::ActiveWindowOutput::Ptr ActiveWindow::spinOnce(const hydra::InputPacket& 
     CLOG(3) << "[Khronos Active Window] Processed input frame " << num_frames_processed_ << " ("
             << input.timestamp_ns << "). Queues: " << input_queue_->size() << " input,  "
             << output_queue_->size() << " frontend.";
+  }
+  if (num_frames_processed_ % 100 == 0) {
+    const auto& queues = hydra::PipelineQueues::instance();
+    CLOG(3) << "[Khronos retention] frames=" << frame_data_buffer_.size()
+            << " tracks=" << tracks_.size()
+            << " extraction_pending=" << extraction_worker_.numPending()
+            << " extraction_running=" << extraction_worker_.numRunning()
+            << " backend=" << queues.backend_queue.size()
+            << " features=" << queues.input_features_queue.size()
+            << " subkeyframes=" << (queues.subkeyframe_queue ? queues.subkeyframe_queue->size() : 0)
+            << " subkeyframe_nodes=" << (queues.subkeyframe_node_queue ? queues.subkeyframe_node_queue->size() : 0);
   }
   ++num_frames_processed_;
 
