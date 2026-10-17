@@ -82,7 +82,9 @@ void ObjectWorkerPool::stop() {
 
 void ObjectWorkerPool::join() {
   CLOG(5) << "Joining " << curr_workers_ << " extraction threads!";
-  while (curr_workers_ > 0) {
+  // Queued requests count as pending: a request is only counted as a worker once the spin
+  // thread pops it, which happens after curr_workers_ is incremented.
+  while (!work_queue_.empty() || curr_workers_ > 0) {
     CLOG(10) << "Waiting on " << curr_workers_ << " extraction threads to finish!";
     std::this_thread::sleep_for(10ms);
   }
@@ -141,16 +143,21 @@ void ObjectWorkerPool::runOnce(Request::Ptr req) const {
 
   ElapsedTimeRecorder::instance().record("active_window/extract_object", req->stamp, stop - start);
 
-  curr_workers_--;
-  std::lock_guard<std::mutex> lock(output_mutex_);
-  if (attrs) {
-    output_.emplace_back(
-        hydra::NodeUpdate{std::shared_ptr<spark_dsg::NodeAttributes>(std::move(attrs)),
-                          static_cast<size_t>(req->track.id)});
-  } else {
-    output_.emplace_back(hydra::NodeUpdate{
-        nullptr, static_cast<size_t>(req->track.id), hydra::NodeUpdate::UpdateType::Delete});
+  {
+    std::lock_guard<std::mutex> lock(output_mutex_);
+    if (attrs) {
+      output_.emplace_back(
+          hydra::NodeUpdate{std::shared_ptr<spark_dsg::NodeAttributes>(std::move(attrs)),
+                            static_cast<size_t>(req->track.id)});
+    } else {
+      output_.emplace_back(hydra::NodeUpdate{
+          nullptr, static_cast<size_t>(req->track.id), hydra::NodeUpdate::UpdateType::Delete});
+    }
   }
+
+  // Only count the worker as done once its result is visible to fill(), so join() + fill()
+  // never miss it.
+  curr_workers_--;
 }
 
 }  // namespace khronos
