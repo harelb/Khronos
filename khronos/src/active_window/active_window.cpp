@@ -90,6 +90,7 @@ void declare_config(ActiveWindow::Config& config) {
   field(config.mesh_integrator, "mesh_integrator");
   field(config.frame_data_buffer, "frame_data_buffer");
   field(config.khronos_sinks, "khronos_sinks");
+  field(config.finish_mapping_on_stop, "finish_mapping_on_stop");
 }
 
 SensorProcessor::SensorProcessor(const Config& config)
@@ -220,8 +221,20 @@ hydra::ActiveWindowOutput::Ptr ActiveWindow::spinOnce(const hydra::InputData::Pt
   return output;
 }
 
+void ActiveWindow::stop() {
+  const bool was_running = spin_thread_ != nullptr;
+  // Joins the spin thread after the input queue is drained.
+  hydra::ActiveWindowModule::stop();
+  if (was_running && config.finish_mapping_on_stop) {
+    finishMapping();
+  }
+}
+
 void ActiveWindow::finishMapping() {
   std::lock_guard<std::mutex> lock(mutex_);
+  if (frame_data_buffer_.size() == 0) {
+    return;
+  }
 
   // Mark all voxels and tracks as inactive, then extract the resulting output. This will duplicate
   // / append to the last received frame pose and stamp.
@@ -232,7 +245,12 @@ void ActiveWindow::finishMapping() {
     track.is_active = false;
   }
   // Extract objects and wait for them to finish extraction.
-  extractOutputData(frame_data_buffer_.getLatestData(), false);
+  auto output = extractOutputData(frame_data_buffer_.getLatestData(), false);
+  CLOG(1) << "[Khronos Active Window] Finished mapping: forwarding "
+          << output->archived.size() << " archived blocks.";
+  if (output_queue_) {
+    output_queue_->push(output);
+  }
 }
 
 std::vector<std::shared_ptr<KhronosObjectAttributes>> ActiveWindow::extractObjects() {

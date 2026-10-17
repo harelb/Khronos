@@ -107,6 +107,10 @@ class ActiveWindow : public hydra::ActiveWindowModule {
     //! Minimum confidence before object is forwarded to graph builder
     float min_object_confidence = 0.5f;
 
+    //! If true, stopping the module calls finishMapping() so that tracks still in the active
+    //! window are extracted and forwarded instead of being dropped.
+    bool finish_mapping_on_stop = true;
+
     // override layer defaults of Hydra
     Config() : hydra::ActiveWindowModule::Config(false, true) {}
   } const config;
@@ -116,6 +120,11 @@ class ActiveWindow : public hydra::ActiveWindowModule {
   virtual ~ActiveWindow() = default;
 
   std::string printInfo() const override;
+
+  /**
+   * @brief Stop processing inputs. Finishes mapping if finish_mapping_on_stop is set.
+   */
+  void stop() override;
 
   // Access. These are not thread-safe!
   VolumetricMap& getMap() { return map_; }
@@ -138,7 +147,7 @@ class ActiveWindow : public hydra::ActiveWindowModule {
    * the currently trackd data inside the active window. Pushes all data currently in the active
    * window to the output. NOTE(lschmid): This currently duplicates the last timestamp received.
    * Maybe better to take a separate stamp as input? Also, the final output data will not contain a
-   * transform.
+   * transform. Does nothing if no frame was processed yet.
    */
   void finishMapping();
 
