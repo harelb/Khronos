@@ -39,14 +39,12 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <numeric>
 #include <sstream>
 
 #include <config_utilities/types/path.h>
 #include <glog/logging.h>
-#include <hydra/frontend/keyframe_writer.h>
 #include <hydra/input/camera.h>
-#include <hydra/utils/image_folder.h>
-#include <nlohmann/json.hpp>
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 #include <spark_dsg/colormaps.h>
@@ -70,7 +68,7 @@ void declare_config(MeshObjectExtractor::Config& config) {
   field(config.object_reconstruction_resolution, "object_reconstruction_resolution");
   field(config.min_reconstruction_resolution, "min_reconstruction_resolution");
   field(config.visualize_classification, "visualize_classification");
-  field<Path>(config.object_image_output_path, "object_image_output_path");
+  field<Path>(config.image_store_path, "image_store_path");
   enum_field(config.image_selection_criteria,
              "image_selection_criteria",
              std::vector<std::string>{"largest_bbox", "segment_size", "all"});
@@ -91,7 +89,14 @@ void declare_config(MeshObjectExtractor::Config& config) {
 }
 
 MeshObjectExtractor::MeshObjectExtractor(const Config& config)
-    : config(config), mesh_integrator_(config.mesh_integrator) {}
+    : config(config),
+      mesh_integrator_(config.mesh_integrator),
+      image_store_(hydra::ImageStore::open(config.image_store_path)) {
+  if (!config.image_store_path.empty() && !image_store_) {
+    LOG(ERROR) << "[MeshObjectExtractor] Failed to open image store at "
+               << config.image_store_path << "; object observations are not saved";
+  }
+}
 
 KhronosObjectAttributes::Ptr MeshObjectExtractor::extractObject(const Track& track,
                                                                 const FrameDataBuffer& frame_data) {
@@ -328,10 +333,10 @@ KhronosObjectAttributes::Ptr MeshObjectExtractor::extractStaticObject(
     point -= offset;
   }
 
-  if (!config.object_image_output_path.empty()) {
+  if (image_store_) {
     // Extraction runs on a worker thread, so failures must not escape.
     try {
-      saveObjectImages(track, frames, *object);
+      saveObjectImages(track, frames);
     } catch (const std::exception& e) {
       LOG(WARNING) << "[MeshObjectExtractor] Failed to save images of " << getTrackName(track)
                    << ": " << e.what();
@@ -342,68 +347,68 @@ KhronosObjectAttributes::Ptr MeshObjectExtractor::extractStaticObject(
 }
 
 void MeshObjectExtractor::saveObjectImages(
-    const Track& track,
-    const std::vector<std::pair<FrameData::Ptr, int>>& frames,
-    KhronosObjectAttributes& object) const {
-  // Observations of this track.
-  std::vector<std::pair<const FrameData*, const MeasurementCluster*>> observations;
+    const Track& track, const std::vector<std::pair<FrameData::Ptr, int>>& frames) const {
+  // Observations of this track and their scores.
+  using Selection = Config::ImageSelection;
+  struct Candidate {
+    const FrameData* frame;
+    const MeasurementCluster* cluster;
+    double score;
+  };
+
+  std::vector<Candidate> candidates;
   for (const auto& [frame, id] : frames) {
     const auto it = std::find_if(frame->semantic_clusters.begin(),
                                  frame->semantic_clusters.end(),
                                  [id = id](const auto& cluster) { return cluster.id == id; });
-    if (it != frame->semantic_clusters.end()) {
-      observations.emplace_back(frame.get(), &*it);
-    }
-  }
-
-  if (observations.empty()) {
-    return;
-  }
-
-  // Select the observations to save.
-  using Selection = Config::ImageSelection;
-  if (config.image_selection_criteria != Selection::kAll) {
-    const auto value = [this](const MeasurementCluster& cluster) {
-      return config.image_selection_criteria == Selection::kSegmentSize
-                 ? static_cast<float>(cluster.pixels.size())
-                 : cluster.bounding_box.volume();
-    };
-    const auto best = std::max_element(
-        observations.begin(), observations.end(), [&value](const auto& lhs, const auto& rhs) {
-          return value(*lhs.second) < value(*rhs.second);
-        });
-    observations = {*best};
-  }
-
-  // The frontend writes to a temporary folder per track that the backend moves to a stable
-  // folder per object node once the object is in the scene graph.
-  const auto& root = config.object_image_output_path;
-  const auto object_dir = root / hydra::utils::kTempImageFolder / ("O_" + std::to_string(track.id));
-  // The calibration is shared by all objects and lives in the image root, one level above the
-  // final object folders.
-  const hydra::KeyframeWriter writer(
-      object_dir,
-      hydra::utils::kObjectImagePrefix,
-      (std::filesystem::path("..") / hydra::utils::kCameraCalibFile).string());
-
-  size_t num_written = 0;
-  for (const auto& [frame, cluster] : observations) {
-    const auto& input = frame->input;
-    if (!calib_written_) {
-      const auto camera = dynamic_cast<const hydra::Camera*>(&input.getSensor());
-      if (camera && hydra::writeCameraCalib(root, hydra::CameraCalib::fromCamera(*camera))) {
-        calib_written_ = true;
-      }
-    }
-
-    const auto& reference = input.color_image.empty() ? input.depth_image : input.color_image;
-    if (reference.empty()) {
+    if (it == frame->semantic_clusters.end()) {
       continue;
     }
 
-    // Per-frame metadata in addition to the shared camera calibration.
-    nlohmann::json meta{{"depth_encoding", hydra::kKeyframeDepthEncoding},
-                        {"world_T_body", hydra::isometryToJson(input.world_T_body)}};
+    const double score = config.image_selection_criteria == Selection::kLargestBBox
+                             ? static_cast<double>(it->bounding_box.volume())
+                             : static_cast<double>(it->pixels.size());
+    candidates.push_back({frame.get(), &*it, score});
+  }
+
+  if (candidates.empty()) {
+    return;
+  }
+
+  // Only the best observations keep their images.
+  std::vector<bool> kept(candidates.size(), true);
+  if (config.image_selection_criteria != Selection::kAll) {
+    std::vector<size_t> order(candidates.size());
+    std::iota(order.begin(), order.end(), 0);
+    std::stable_sort(order.begin(), order.end(), [&candidates](size_t lhs, size_t rhs) {
+      return candidates[lhs].score > candidates[rhs].score;
+    });
+    const auto num_kept = image_store_->config.max_images_per_object;
+    for (size_t i = num_kept; i < order.size(); ++i) {
+      kept[order[i]] = false;
+    }
+  }
+
+  auto& store = *image_store_;
+  const int robot_id = hydra::GlobalInfo::instance().getRobotPrefix().id;
+  std::vector<hydra::ImageStore::Observation> observations;
+  for (size_t i = 0; i < candidates.size(); ++i) {
+    const auto& [frame, cluster, score] = candidates[i];
+    const auto& input = frame->input;
+    const auto& sensor = input.getSensor();
+    const auto camera = dynamic_cast<const hydra::Camera*>(&sensor);
+    hydra::ImageStore::Frame record;
+    record.robot_id = robot_id;
+    record.sensor_id = store.addSensor(
+        robot_id, sensor.name, camera ? hydra::CameraCalib::fromCamera(*camera) : hydra::CameraCalib());
+    record.timestamp_ns = input.timestamp_ns;
+    record.kind = hydra::ImageStore::FrameKind::Observation;
+    record.world_T_body = input.world_T_body;
+
+    hydra::ImageStore::Observation obs;
+    obs.timestamp_ns = input.timestamp_ns;
+    obs.score = score;
+    obs.kept = kept[i];
 
     // Axis-aligned extent of the 3D bounding box (works for AABB and RAABB).
     const auto corners = cluster->bounding_box.corners();
@@ -414,40 +419,42 @@ void MeshObjectExtractor::saveObjectImages(
       max_c = max_c.cwiseMax(c);
     }
 
-    meta["bbox_min"] = {min_c.x(), min_c.y(), min_c.z()};
-    meta["bbox_max"] = {max_c.x(), max_c.y(), max_c.z()};
+    obs.bbox3d = std::make_pair(min_c.cast<double>(), max_c.cast<double>());
 
     // Segmentation mask of the object and its 2D bounding box (inclusive pixel bounds).
-    cv::Mat mask = cv::Mat::zeros(reference.size(), CV_8UC1);
-    for (const auto& pixel : cluster->pixels) {
-      if (pixel.u >= 0 && pixel.u < mask.cols && pixel.v >= 0 && pixel.v < mask.rows) {
-        mask.at<uint8_t>(pixel.v, pixel.u) = 255;
+    const auto& reference = input.color_image.empty() ? input.depth_image : input.color_image;
+    if (!reference.empty()) {
+      cv::Mat mask = cv::Mat::zeros(reference.size(), CV_8UC1);
+      for (const auto& pixel : cluster->pixels) {
+        if (pixel.u >= 0 && pixel.u < mask.cols && pixel.v >= 0 && pixel.v < mask.rows) {
+          mask.at<uint8_t>(pixel.v, pixel.u) = 255;
+        }
+      }
+
+      const cv::Rect bbox_2d = cv::boundingRect(mask);
+      if (bbox_2d.area() > 0) {
+        obs.bbox2d = std::array<int, 4>{
+            bbox_2d.x, bbox_2d.y, bbox_2d.x + bbox_2d.width - 1, bbox_2d.y + bbox_2d.height - 1};
+      }
+
+      obs.mask_rle = hydra::ImageStore::encodeMaskRle(mask);
+      if (obs.kept) {
+        obs.mask = mask;
       }
     }
 
-    const auto timestamp_ns = input.timestamp_ns;
-    const cv::Rect bbox_2d = cv::boundingRect(mask);
-    if (bbox_2d.area() > 0) {
-      meta["bbox_2d"] = {{"min_x", bbox_2d.x},
-                         {"min_y", bbox_2d.y},
-                         {"max_x", bbox_2d.x + bbox_2d.width - 1},
-                         {"max_y", bbox_2d.y + bbox_2d.height - 1}};
-      const auto mask_path = writer.prefix(timestamp_ns).string() + "_mask.png";
-      if (hydra::writeImage(mask_path, mask)) {
-        meta["mask_file"] = std::filesystem::path(mask_path).filename().string();
-      }
+    if (obs.kept) {
+      const auto color =
+          input.color_image.empty() ? cv::Mat() : hydra::colorToKeyframe(input.color_image);
+      obs.frame_id = store.addFrame(record, color, input.depth_image);
+    } else {
+      obs.frame_id = store.addFrame(record);
     }
 
-    const auto color =
-        input.color_image.empty() ? cv::Mat() : hydra::colorToKeyframe(input.color_image);
-    if (writer.write(timestamp_ns, color, hydra::depthToKeyframe(input.depth_image), meta)) {
-      ++num_written;
-    }
+    observations.push_back(std::move(obs));
   }
 
-  if (num_written > 0) {
-    object.image_folder = hydra::utils::relativeImageFolder(root, object_dir);
-  }
+  store.addObservations(robot_id, track.id, observations);
 }
 
 std::vector<std::pair<FrameData::Ptr, int>> MeshObjectExtractor::collectSemanticFrames(
