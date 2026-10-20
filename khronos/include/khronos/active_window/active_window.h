@@ -111,6 +111,9 @@ class ActiveWindow : public hydra::ActiveWindowModule {
     //! window are extracted and forwarded instead of being dropped.
     bool finish_mapping_on_stop = true;
 
+    //! Give active-track nodes the accumulated bounding box (once valid) instead of the last one.
+    bool live_accumulated_bounding_box = false;
+
     // override layer defaults of Hydra
     Config() : hydra::ActiveWindowModule::Config(false, true) {}
   } const config;
@@ -217,6 +220,9 @@ class ActiveWindow : public hydra::ActiveWindowModule {
   TimeStamp latest_stamp_;
   TimeStamp last_full_upated_ = 0;
   size_t num_frames_processed_ = 0;  // For info only.
+  // Ids of tracks absorbed by other tracks (MaxIoUTracker::mergeTracks) since the last output,
+  // whose object nodes are deleted downstream with the next output.
+  std::vector<int> pending_retractions_;
 
  private:
   inline static const auto registration_ = config::
