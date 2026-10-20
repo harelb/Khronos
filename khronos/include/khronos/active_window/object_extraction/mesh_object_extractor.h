@@ -47,10 +47,10 @@
 #include <hydra/common/global_info.h>
 #include <hydra/input/sensor_map.h>
 #include <hydra/reconstruction/mesh_integrator.h>
-#include <hydra/utils/image_store.h>
 
 #include "khronos/active_window/integration/object_integrator.h"
 #include "khronos/active_window/object_extraction/object_extractor.h"
+#include "khronos/active_window/object_extraction/object_image_saver.h"
 
 namespace khronos {
 
@@ -107,13 +107,9 @@ class MeshObjectExtractor : public ObjectExtractor {
     // records which node each track becomes.
     std::filesystem::path image_store_path;
 
-    // Score that ranks the observations of an object: the volume of its 3D bounding box or
-    // its number of segmented pixels. `all` scores by pixels and keeps every image.
-    enum class ImageSelection {
-      kLargestBBox,
-      kSegmentSize,
-      kAll
-    } image_selection_criteria = ImageSelection::kLargestBBox;
+    // Score that ranks the observations of an object (see ObjectImageSaver).
+    using ImageSelection = ObjectImageSaver::Selection;
+    ImageSelection image_selection_criteria = ImageSelection::kLargestBBox;
 
     hydra::SensorMap<ObjectIntegrator>::Config projective_integrator;
     hydra::MeshIntegratorConfig mesh_integrator;
@@ -149,12 +145,6 @@ class MeshObjectExtractor : public ObjectExtractor {
   bool trackIsValid(const Track& track) const;
 
   /**
-   * @brief Record the observations of an extracted object in the image store.
-   */
-  void saveObjectImages(const Track& track,
-                        const std::vector<std::pair<FrameData::Ptr, int>>& frames) const;
-
-  /**
    * @brief Get a human readable name for the given track for printing.
    */
   static std::string getTrackName(const Track& track);
@@ -184,7 +174,7 @@ class MeshObjectExtractor : public ObjectExtractor {
 
  private:
   hydra::MeshIntegrator mesh_integrator_;
-  hydra::ImageStore::Ptr image_store_;
+  ObjectImageSaver image_saver_;
 
   inline static const auto registration_ =
       config::RegistrationWithConfig<ObjectExtractor,

@@ -37,6 +37,7 @@
 
 #include "khronos/active_window/object_extraction/accumulated_object_extractor.h"
 
+#include <config_utilities/types/path.h>
 #include <glog/logging.h>
 #include <spatial_hash/grid.h>
 
@@ -49,6 +50,10 @@ void declare_config(AccumulatedObjectExtractor::Config& config) {
   field(config.min_object_allocation_confidence, "min_object_allocation_confidence");
   field(config.min_object_volume, "min_object_volume", "m^3");
   field(config.max_object_volume, "max_object_volume", "m^3");
+  field<Path>(config.image_store_path, "image_store_path");
+  enum_field(config.image_selection_criteria,
+             "image_selection_criteria",
+             std::vector<std::string>{"largest_bbox", "segment_size", "all"});
 
   checkInRange(
       config.min_object_allocation_confidence, 0.0f, 1.0f, "min_object_allocation_confidence");
@@ -57,11 +62,14 @@ void declare_config(AccumulatedObjectExtractor::Config& config) {
 }
 
 AccumulatedObjectExtractor::AccumulatedObjectExtractor(const Config& config)
-    : config(config::checkValid(config)) {}
+    : config(config::checkValid(config)),
+      image_saver_(this->config.image_store_path,
+                   this->config.image_selection_criteria,
+                   "AccumulatedObjectExtractor") {}
 
 KhronosObjectAttributes::Ptr AccumulatedObjectExtractor::extractObject(
     const Track& track,
-    const FrameDataBuffer& /* frame_data */) {
+    const FrameDataBuffer& frame_data) {
   if (track.confidence <= config.min_object_allocation_confidence) {
     CLOG(5) << "[AccumulatedObjectExtractor] Dropping track " << track.id << ": low confidence ("
             << track.confidence << " <= " << config.min_object_allocation_confidence << ").";
@@ -80,6 +88,10 @@ KhronosObjectAttributes::Ptr AccumulatedObjectExtractor::extractObject(
   object->first_observed_ns = {track.first_seen};
   object->last_observed_ns = {track.last_seen};
   object->position = object->bounding_box.world_P_center.cast<double>();
+  if (!track.is_dynamic) {
+    image_saver_.save(track, frame_data);
+  }
+
   return object;
 }
 

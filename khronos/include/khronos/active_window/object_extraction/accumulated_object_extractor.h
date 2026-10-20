@@ -37,10 +37,13 @@
 
 #pragma once
 
+#include <filesystem>
+
 #include <config_utilities/config_utilities.h>
 #include <hydra/common/global_info.h>
 
 #include "khronos/active_window/object_extraction/object_extractor.h"
+#include "khronos/active_window/object_extraction/object_image_saver.h"
 
 namespace khronos {
 
@@ -60,6 +63,16 @@ class AccumulatedObjectExtractor : public ObjectExtractor {
     // Extract only static objects with a bounding box volume in this range [m3].
     float min_object_volume = 0.1f;
     float max_object_volume = 4.0f;
+
+    // Image store to record the observations of extracted static objects in (empty disables, see
+    // hydra::ImageStore). Every observation is recorded; the images of the best
+    // max_images_per_object observations of the store are kept. Hydra's graph updater
+    // records which node each track becomes.
+    std::filesystem::path image_store_path;
+
+    // Score that ranks the observations of an object (see ObjectImageSaver).
+    using ImageSelection = ObjectImageSaver::Selection;
+    ImageSelection image_selection_criteria = ImageSelection::kLargestBBox;
   } const config;
 
   // Construction.
@@ -72,6 +85,8 @@ class AccumulatedObjectExtractor : public ObjectExtractor {
  private:
   KhronosObjectAttributes::Ptr extractStaticObject(const Track& track) const;
   KhronosObjectAttributes::Ptr extractDynamicObject(const Track& track) const;
+
+  ObjectImageSaver image_saver_;
 
   inline static const auto registration_ =
       config::RegistrationWithConfig<ObjectExtractor,
