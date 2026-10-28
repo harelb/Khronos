@@ -76,6 +76,13 @@ class ObjectWorkerPool {
   ~ObjectWorkerPool();
 
   void stop();
+
+  /**
+   * @brief Block until every submitted request has been extracted and its result can
+   * be collected by fill(). Waits for queued requests as well as running workers, so
+   * it must only be called while the pool is running (before stop()): a stopped pool
+   * never drains its queue.
+   */
   void join();
   size_t numRunning() const;
 
