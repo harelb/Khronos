@@ -37,14 +37,19 @@
 
 #include "khronos/active_window/active_window.h"
 
-#include <unordered_set>
-
 #include <hydra/common/global_info.h>
 #include <hydra/input/sensor_utilities.h>
 #include <hydra/reconstruction/integration_masking.h>
 
 namespace khronos {
 namespace {
+
+static const auto registration =
+    config::RegistrationWithConfig<hydra::ActiveWindowModule,
+                                   ActiveWindow,
+                                   ActiveWindow::Config,
+                                   hydra::ActiveWindowModule::OutputQueue::Ptr,
+                                   std::unique_ptr<hydra::VolumetricWindow>>("ActiveWindow");
 
 std::shared_ptr<KhronosObjectAttributes> createObjectAttributes(const Track& track,
                                                                 bool use_accumulated_bbox) {
@@ -61,6 +66,8 @@ std::shared_ptr<KhronosObjectAttributes> createObjectAttributes(const Track& tra
                              ? track.accumulated_bounding_box
                              : track.last_bounding_box;
   object->position = object->bounding_box.world_P_center.cast<double>();
+  // Live track; the extracted object replacing it is inactive (see ObjectWorkerPool::runOnce).
+  object->is_active = true;
 
   return object;
 }
@@ -112,8 +119,10 @@ SensorProcessor::SensorProcessor(const Config& config)
   }
 }
 
-ActiveWindow::ActiveWindow(const Config& config, const OutputQueue::Ptr& output_queue)
-    : hydra::ActiveWindowModule(config, output_queue),
+ActiveWindow::ActiveWindow(const Config& config,
+                           const OutputQueue::Ptr& output_queue,
+                           std::unique_ptr<hydra::VolumetricWindow>&& window)
+    : hydra::ActiveWindowModule(config, output_queue, std::move(window)),
       config(config::checkValid(config)),
       processors_(config.processors),
       tracking_integrator_(config.tracking_integrator, map_window_.get()),
@@ -139,6 +148,14 @@ std::string ActiveWindow::printInfo() const {
 void ActiveWindow::addKhronosSink(const KhronosSink::Ptr& sink) {
   if (sink) {
     sinks_.push_back(sink);
+  }
+}
+
+void ActiveWindow::stop() {
+  // Joins the spin thread after the input queue is drained.
+  ActiveWindowModule::stop();
+  if (config.finish_mapping_on_stop) {
+    finishMapping();
   }
 }
 
@@ -182,18 +199,9 @@ hydra::ActiveWindowOutput::Ptr ActiveWindow::spinOnce(const hydra::InputData::Pt
   // Initialize tracking for new detections and track and associate objects
   // throughout frames.
   if (processor->tracker) {
-    std::unordered_set<int> previous_ids;
-    for (const auto& track : tracks_) {
-      previous_ids.insert(track.id);
-    }
-
-    processor->tracker->processInput(*data, tracks_);
-
-    // Tracks only disappear here if the tracker merged them into other tracks.
-    for (const auto& track : tracks_) {
-      previous_ids.erase(track.id);
-    }
-    pending_retractions_.insert(pending_retractions_.end(), previous_ids.begin(), previous_ids.end());
+    const auto retracted_ids = processor->tracker->processInput(*data, tracks_);
+    pending_retractions_.insert(
+        pending_retractions_.end(), retracted_ids.begin(), retracted_ids.end());
   }
 
   // Update track active status using the active window's VolumetricWindow policy.
@@ -238,48 +246,32 @@ hydra::ActiveWindowOutput::Ptr ActiveWindow::spinOnce(const hydra::InputData::Pt
   return output;
 }
 
-void ActiveWindow::stop() {
-  const bool was_running = spin_thread_ != nullptr;
-  // Joins the spin thread after the input queue is drained.
-  hydra::ActiveWindowModule::stop();
-  if (was_running && config.finish_mapping_on_stop) {
-    finishMapping();
-  }
-}
-
 void ActiveWindow::finishMapping() {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (frame_data_buffer_.size() == 0) {
-    return;
-  }
 
-  // Mark all voxels and tracks as inactive, then extract the resulting output. This will duplicate
-  // / append to the last received frame pose and stamp.
+  // Mark all voxels and tracks as inactive, then extract the resulting output
+  // This will duplicate the last received frame pose and stamp.
   for (auto& block : *map_.getTrackingLayer()) {
     block.has_active_data = false;
   }
-  for (Track& track : tracks_) {
+
+  for (auto& track : tracks_) {
     track.is_active = false;
   }
+
   // Extract objects and wait for them to finish extraction.
-  auto output = extractOutputData(frame_data_buffer_.getLatestData(), false);
+  const auto latest = frame_data_buffer_.getLatestData();
+  if (!latest) {
+    LOG_IF(WARNING, num_frames_processed_ > 0) << "Unable to get last frame from buffer!";
+    return;
+  }
+
+  auto output = extractOutputData(*latest, false);
   CLOG(1) << "[Khronos Active Window] Finished mapping: forwarding "
-          << output->archived.size() << " archived blocks.";
-  if (output_queue_) {
+          << (output ? output->archived.size() : 0) << " archived blocks.";
+  if (output && output_queue_) {
     output_queue_->push(output);
   }
-}
-
-std::vector<std::shared_ptr<KhronosObjectAttributes>> ActiveWindow::extractObjects() {
-  std::vector<std::shared_ptr<KhronosObjectAttributes>> result;
-  std::lock_guard<std::mutex> lock(mutex_);
-  for (const auto& track : tracks_) {
-    auto output_object = extraction_worker_.runBlocking(track, frame_data_buffer_);
-    if (output_object) {
-      result.emplace_back(std::move(output_object));
-    }
-  }
-  return result;
 }
 
 void ActiveWindow::updateMap(const SensorProcessor& processor, const FrameData& data) {

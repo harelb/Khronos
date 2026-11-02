@@ -84,10 +84,11 @@ void FrameDataBuffer::trimBuffer(const Tracks& tracks) {
   }
 }
 
-void FrameDataBuffer::storeData(const FrameData::Ptr& data) {
-  // The latest frame is always available, whether or not it is kept in the buffer.
-  latest_data_ = data;
+const FrameData* FrameDataBuffer::getLatestData() const {
+  return buffer_.empty() ? nullptr : buffer_.back().get();
+}
 
+void FrameDataBuffer::storeData(const FrameData::Ptr& data) {
   // Only keep every n-th frame.
   const bool store_data = input_counter_ == 0;
   input_counter_ = (input_counter_ + 1) % config.store_every_n_frames;
