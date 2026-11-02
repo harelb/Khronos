@@ -60,6 +60,9 @@ void declare_config(MeshObjectExtractor::Config& config) {
   field(config.object_reconstruction_resolution, "object_reconstruction_resolution");
   field(config.min_reconstruction_resolution, "min_reconstruction_resolution");
   field(config.visualize_classification, "visualize_classification");
+  enum_field(config.image_selection_criteria,
+             "image_selection_criteria",
+             std::vector<std::string>{"largest_bbox", "segment_size", "all"});
   field(config.projective_integrator, "projective_integrator");
   field(config.mesh_integrator, "mesh_integrator");
   enum_field(config.bbox_type, "bbox_type", std::vector<std::string>{"aabb", "raabb"});
@@ -77,7 +80,9 @@ void declare_config(MeshObjectExtractor::Config& config) {
 }
 
 MeshObjectExtractor::MeshObjectExtractor(const Config& config)
-    : config(config), mesh_integrator_(config.mesh_integrator) {}
+    : config(config),
+      mesh_integrator_(config.mesh_integrator),
+      image_saver_(this->config.image_selection_criteria, "MeshObjectExtractor") {}
 
 KhronosObjectAttributes::Ptr MeshObjectExtractor::extractObject(const Track& track,
                                                                 const FrameDataBuffer& frame_data) {
@@ -313,6 +318,8 @@ KhronosObjectAttributes::Ptr MeshObjectExtractor::extractStaticObject(
   for (Point& point : object->mesh.points) {
     point -= offset;
   }
+
+  image_saver_.save(track, frames);
   return object;
 }
 

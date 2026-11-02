@@ -97,6 +97,14 @@ ${PROJECT_NAME}
         ${PROJECT_NAME}_registration
         PRIVATE ${tf2_eigen_LIBRARIES}
 )
+# object observations are only recorded if hydra has its image store
+if(hydra_IMAGE_STORE_ENABLED)
+  target_sources(${PROJECT_NAME} PRIVATE src/active_window/object_extraction/object_image_saver.cpp)
+else()
+  message(STATUS "hydra has no image store: object observations are not recorded")
+  target_sources(${PROJECT_NAME}
+                 PRIVATE src/active_window/object_extraction/object_image_saver_disabled.cpp)
+endif()
 set_property(TARGET ${PROJECT_NAME} PROPERTY POSITION_INDEPENDENT_CODE ON)
 add_library(khronos::${PROJECT_NAME} ALIAS ${PROJECT_NAME})
 

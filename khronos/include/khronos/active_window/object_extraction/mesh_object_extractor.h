@@ -49,6 +49,7 @@
 
 #include "khronos/active_window/integration/object_integrator.h"
 #include "khronos/active_window/object_extraction/object_extractor.h"
+#include "khronos/active_window/object_extraction/object_image_saver.h"
 
 namespace khronos {
 
@@ -98,6 +99,14 @@ class MeshObjectExtractor : public ObjectExtractor {
 
     // Bounding box type used for extracted (persistent) static objects.
     enum class BBoxType { kAABB, kRAABB } bbox_type = BBoxType::kAABB;
+
+    // Score that ranks the observations of an object (see ObjectImageSaver). The
+    // observations of extracted objects are recorded in the image store of the pipeline if
+    // one is configured (see hydra::GlobalInfo::imageStore). Every observation is recorded;
+    // the images of the best max_images_per_object observations of the store are kept.
+    // Hydra's graph updater records which node each track becomes.
+    using ImageSelection = ObjectImageSaver::Selection;
+    ImageSelection image_selection_criteria = ImageSelection::kLargestBBox;
 
     hydra::SensorMap<ObjectIntegrator>::Config projective_integrator;
     hydra::MeshIntegratorConfig mesh_integrator;
@@ -162,6 +171,7 @@ class MeshObjectExtractor : public ObjectExtractor {
 
  private:
   hydra::MeshIntegrator mesh_integrator_;
+  ObjectImageSaver image_saver_;
 
   inline static const auto registration_ =
       config::RegistrationWithConfig<ObjectExtractor,
